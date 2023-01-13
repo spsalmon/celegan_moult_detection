@@ -1,56 +1,24 @@
 import argparse
 import logging
-from lzma import PRESET_DEFAULT
 import os
-import sys
-from xml.etree.ElementPath import prepare_descendant
 
-import numpy as np
 import torch
 import torch.nn as nn
-from torch import optim
-from tqdm import tqdm
-from yaml import load
-
-from utils.loss_function import *
-from utils.accuracy import *
-from utils.dataset import *
-from utils.array import *
-
-import argparse
-import logging
-from lzma import PRESET_DEFAULT
-import os
-import sys
-from xml.etree.ElementPath import prepare_descendant
-
-import numpy as np
-import torch
-import torch.nn as nn
-from torch import optim
 from tqdm import tqdm
 
 from model import ResNet50, ResNet101, ResNet152
 from utils.dataset import *
 from utils.array import *
-from scipy import interpolate
 
-from torch.utils.tensorboard.writer import SummaryWriter
-from utils.dataset import TrainingDataset
-from torch.utils.data import DataLoader, random_split
-import torch.nn.functional as F
-import matplotlib
-import matplotlib.pyplot as plt
-import random
-import cv2
-from PIL import Image, ImageFilter
 from collections import OrderedDict
+from typing import Tuple
 
 import pandas as pd
 
-import time
+logging.basicConfig()
 
-def load_model(model_path: str, device: torch.device, parallel : bool) -> Tuple[nn.Module, int, int, int, list, float, str]:
+
+def load_model(model_path: str, device: torch.device, parallel: bool) -> Tuple[nn.Module, int, int, int, list, float, str]:
     """
     Loads the model from the given path and returns it as a DataParallel model, along with other relevant information.
 
@@ -78,7 +46,8 @@ def load_model(model_path: str, device: torch.device, parallel : bool) -> Tuple[
     layers = checkpoint['layers']
     dim = checkpoint['dim']
     classes = checkpoint['classes']
-    n_channels = checkpoint['n_channels']
+    # n_channels = checkpoint['n_channels']
+    n_channels = 1
 
     # Initializing the neural network
     if layers == 50:
@@ -115,41 +84,72 @@ def load_model(model_path: str, device: torch.device, parallel : bool) -> Tuple[
     return net, epoch, dim, n_channels, classes, accuracy_val, network_name
 
 
-def get_dim_model(model_path):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    checkpoint = torch.load(model_path, map_location=device)
-    return int(checkpoint['dim'])
+def test_model(net, img_dir, labels_csv, model_name, classes, device, batch_size=1, dim=512):
+    """
+    Test a binary classifier model on a dataset.
 
-def test_model(net, model_name,
-              device,
-              batch_size=1,
-              dim=512):
+    Parameters
+    ----------
+    net: torch.nn.Module
+        The trained model to be tested.
+    img_dir: str
+        The directory containing the test images.
+    labels_csv: str
+        The file path of the CSV file containing the labels for the test images.
+    model_name: str
+        The name of the model.
+    classes: list of str
+        A list of the class labels.
+    device: str
+        The device to use for testing (e.g. 'cpu' or 'cuda').
+    batch_size: int, optional
+        The batch size to use for testing. Default is 1.
+    dim: int, optional
+        The size of the images in the dataset. Default is 512.
 
-
+    Returns
+    -------
+    tuple
+        A tuple of integers containing the following counts:
+        - The number of true negatives (TN).
+        - The number of true positives (TP).
+        - The number of false negatives (FN).
+        - The number of false positives (FP).
+    """
+    # Create a test dataset and dataloader
     dataset_test = TrainingDataset(img_dir, labels_csv, classes, dim=dim)
     n_test = len(dataset_test)
     test_loader = DataLoader(dataset_test, batch_size=batch_size,
                              shuffle=False, num_workers=32, pin_memory=True)
 
+    # Initialize counters for true negatives, true positives, false negatives, and false positives
     TN = 0
     TP = 0
     FN = 0
     FP = 0
 
+    # Test the model
     with torch.no_grad():
         with tqdm(total=n_test, desc=f'Testing of {model_name}', unit='img') as pbar:
             for batch in test_loader:
+                # Get the images and true labels from the batch
                 imgs = batch['image']
                 true_labels = batch['label']
 
+                # Move the images to the specified device
                 imgs = imgs.to(device=device, dtype=torch.float32)
 
+                # Get the model's predictions for the images
                 probs = torch.softmax(net(imgs), dim=1)
 
+                # Delete the images to save memory
                 del imgs
+
+                # If probs has only one dimension, add a second dimension of size 1
                 if (len(probs.shape) == 1):
                     probs = probs.unsqueeze(1)
 
+                # Iterate through the predictions of the batch and update the counters
                 for i in range(probs.shape[0]):
                     pred = probs[i, :]
                     true_pred = true_labels[i]
@@ -178,15 +178,52 @@ def test_model(net, model_name,
 
         return TN, TP, FN, FP
 
-def performance_measures(TN, TP, FN, FP):
 
-    recall = TP/(TP + FN)
-    fpr = 1 - (TN/(TN + FP))
-    accuracy = (TP + TN)/(TP + TN + FP + FN)
-    error_rate = (1 - accuracy)
-    precision = TP/(TP + FP)
-    f_measure = 2/((1/precision) + (1/recall))
-    f_beta = (1 + 0.5**2)*((precision*recall)/((0.5**2)*precision + recall))
+def performance_measures(TN: int, TP: int, FN: int, FP: int) -> Tuple[float, float, float, float, float, float, float]:
+    """
+    Calculate various performance measures for a binary classifier.
+
+    Parameters:
+    TN: int
+        The number of true negatives.
+    TP: int
+        The number of true positives.
+    FN: int
+        The number of false negatives.
+    FP: int
+        The number of false positives.
+
+    Returns:
+    tuple : a tuple containing the following performance measures:
+        - 'recall': float
+        - 'fpr': float
+        - 'accuracy': float
+        - 'error_rate': float
+        - 'precision': float
+        - 'f_measure': float
+        - 'f_beta': float
+    """
+    # Calculate recall
+    recall = TP / (TP + FN)
+
+    # Calculate false positive rate (fpr)
+    fpr = FP / (TN + FP)
+
+    # Calculate accuracy
+    accuracy = (TP + TN) / (TP + TN + FP + FN)
+
+    # Calculate error rate
+    error_rate = 1 - accuracy
+
+    # Calculate precision
+    precision = TP / (TP + FP)
+
+    # Calculate F-measure
+    f_measure = 2 * (precision * recall) / (precision + recall)
+
+    # Calculate F-beta
+    f_beta = (1 + 0.5**2) * ((precision * recall) /
+                             (0.5**2 * precision + recall))
 
     return recall, fpr, accuracy, error_rate, precision, f_measure, f_beta
 
@@ -215,24 +252,32 @@ def get_args() -> argparse.Namespace:
     # Parse the arguments and return the resulting namespace object
     return parser.parse_args()
 
+
 if __name__ == '__main__':
     args = get_args()
     batch_size = args.batch_size
-    model = args.model_path
+    model_path = args.model_path
+    test_dir = args.test_dir
     test_report_dir = args.report_dir
+    labels_csv = os.path.join(test_dir, "labels.csv")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    resnet, epoch, dim, n_channels, classes, accuracy_val, network_name = load_model("./checkpoints/very_good_for_moults.pth", device, torch.cuda.device_count() > 1)
+    resnet, epoch, dim, n_channels, classes, accuracy_val, network_name = load_model(
+        model_path, device, torch.cuda.device_count() > 1)
 
-    output_dataframe = pd.DataFrame(columns=["model_name", "tn", "tp", "fn", "fp", "recall", "fpr", "accuracy", "error_rate", "precision", "f_measure", "f_beta"])
-    TN, TP, FN, FP = test_model(resnet, os.path.basename(model), device, batch_size=10, dim = dim)
+    output_dataframe = pd.DataFrame(columns=["model_name", "tn", "tp", "fn", "fp",
+                                    "recall", "fpr", "accuracy", "error_rate", "precision", "f_measure", "f_beta"])
+    TN, TP, FN, FP = test_model(resnet, test_dir, labels_csv, os.path.basename(model_path), classes = classes, device=device, batch_size=10, dim=dim)
     print(TN, TP, FN, FP)
-    recall, fpr, accuracy, error_rate, precision, f_measure, f_beta = performance_measures(TN, TP, FN, FP)
+    recall, fpr, accuracy, error_rate, precision, f_measure, f_beta = performance_measures(
+        TN, TP, FN, FP)
 
     print(recall, fpr, accuracy, error_rate, precision, f_measure, f_beta)
 
-    line = [os.path.basename(model), TN, TP, FN, FP, recall, fpr, accuracy, error_rate, precision, f_measure, f_beta]
+    line = [os.path.basename(model_path), TN, TP, FN, FP, recall,
+            fpr, accuracy, error_rate, precision, f_measure, f_beta]
     output_dataframe.loc[0] = line
 
-    output_dataframe.to_csv(test_report_dir + os.path.splitext(os.path.basename(model))[0] + "_test_report.csv", index = False)
+    output_dataframe.to_csv(test_report_dir + os.path.splitext(
+        os.path.basename(model_path))[0] + "_test_report.csv", index=False)

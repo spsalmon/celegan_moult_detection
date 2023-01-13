@@ -191,15 +191,6 @@ def predict(images_dir: str, output_csv:str, model_path: str, batch_size: int, d
         device (torch.device): The device to run the prediction on.
     """
 
-    images = [os.path.join(images_dir, x) for x in os.listdir(images_dir)]
-
-    image_titles = [os.path.basename(x) for x in images]
-
-    points = [x.split("_")[1] for x in image_titles]
-    unique_points = np.unique(points).tolist()
-
-    point_list = [x for x in unique_points]
-
     resnet, epoch, dim, n_channels, classes, accuracy_val, network_name = load_model(model_path, device, torch.cuda.device_count() > 1)
 
     logging.info(f'''Loading model:
@@ -211,65 +202,73 @@ def predict(images_dir: str, output_csv:str, model_path: str, batch_size: int, d
         Images dimension:  {dim}
         Device:          {device.type}
     ''')
-    output_dataframe = pd.DataFrame(columns=["Point", "beg_moult1", "end_moult1", "beg_moult2", "end_moult2", "beg_moult3", "end_moult3", "beg_moult4", "end_moult4"])
+    # output_dataframe = pd.DataFrame(columns=["Point", "beg_moult1", "end_moult1", "beg_moult2", "end_moult2", "beg_moult3", "end_moult3", "beg_moult4", "end_moult4"])
+    output_dataframe = pd.DataFrame(columns=["Point", "Time", "moulting"])
+    logging.info(f'Loading Dataset')
+    dataset_pred = PredictionDataset(images_dir, classes, dim)
+    n_pred = len(dataset_pred)
+    pred_loader = DataLoader(dataset_pred, batch_size=batch_size, shuffle=False, num_workers=64, pin_memory=True)
+    logging.info(f'Finished loading Dataset')
+    with torch.no_grad():
+        with tqdm(total=n_pred, desc=f'Prediction', unit='img') as pbar:
+            for batch in pred_loader:
+                imgs = batch['image']
+                img_paths = batch['img_path']
 
-    for point in point_list:
+                imgs = imgs.to(device=device, dtype=torch.float32)
 
-        videos_of_point = sorted(list_images_of_point(images, point))
-        logging.info(f'Loading Dataset')
-        dataset_pred = PredictionDatasetList(videos_of_point, classes, dim)
-        n_pred = len(dataset_pred)
-        pred_loader = DataLoader(dataset_pred, batch_size=batch_size, shuffle=False, num_workers=16, pin_memory=True)
-        logging.info(f'Finished loading Dataset')
-        with torch.no_grad():
-            trajectory = []
-            with tqdm(total=n_pred, desc=f'Prediction of {point}', unit='img') as pbar:
-                for batch in pred_loader:
-                    imgs = batch['image']
-                    img_paths = batch['img_path']
+                probs = torch.softmax(resnet(imgs), dim=1)
 
-                    imgs = imgs.to(device=device, dtype=torch.float32)
+                del imgs
+                if (len(probs.shape) == 1):
+                    probs = probs.unsqueeze(1)
 
-                    probs = torch.softmax(resnet(imgs), dim=1)
+                for i in range(probs.shape[0]):
+                    pred = probs[i, :]
+                    max_idx = torch.argmax(pred, keepdim=True)
+                    label = classes[max_idx]
+                    name = os.path.basename(img_paths[i])
+                    split = name.split("_")
+                    point = split[1]
+                    point = point[5:].lstrip("0") or "0"
+                    time = split[0]
+                    time = time[4:].lstrip("0") or "0"
 
-                    del imgs
-                    if (len(probs.shape) == 1):
-                        probs = probs.unsqueeze(1)
-
-                    for i in range(probs.shape[0]):
-                        pred = probs[i, :]
-                        max_idx = torch.argmax(pred, keepdim=True)
-                        label = classes[max_idx]
-
-                        if label == "moulting":
-                            trajectory.append(1)
-                        elif label == "not_moulting":
-                            trajectory.append(0)
+                    if label == "moulting":
+                        moulting = 1
+                    else:
+                        moulting = 0
                     
-                    del probs
-                    torch.cuda.empty_cache()
-                    pbar.update(batch_size)
+                    line = [point, time, moulting]
+                    output_dataframe.loc[len(output_dataframe)] = line
+                    
+                
+                del probs
+                torch.cuda.empty_cache()
+                pbar.update(batch_size)
+                output_dataframe.to_csv(output_csv, index=False)
 
-        clean_traj = signal.medfilt(trajectory, 3)
-        # clean_traj = trajectory
 
-        point_line = [get_point_number(point)]
-        moults = find_moults(clean_traj)
-        beg_end_moults = []
-        for l in moults:
-            beg_end_moults.append(beg_and_end(l))
+        # clean_traj = signal.medfilt(trajectory, 3)
+        # # clean_traj = trajectory
 
-        while len(beg_end_moults) < 4:
-            beg_end_moults.append((np.nan, np.nan))
-        for m in beg_end_moults:
-            point_line.extend([m[0], m[1]])
+        # point_line = [get_point_number(point)]
+        # moults = find_moults(clean_traj)
+        # beg_end_moults = []
+        # for l in moults:
+        #     beg_end_moults.append(beg_and_end(l))
 
-        print(point_line)
+        # while len(beg_end_moults) < 4:
+        #     beg_end_moults.append((np.nan, np.nan))
+        # for m in beg_end_moults:
+        #     point_line.extend([m[0], m[1]])
 
-        output_dataframe.loc[len(output_dataframe)] = point_line
+        # print(point_line)
 
-        # print(output_dataframe)
-        output_dataframe.to_csv(output_csv, index=False)
+        
+
+        # # print(output_dataframe)
+        # output_dataframe.to_csv(output_csv, index=False)
 
 
 def get_args() -> argparse.Namespace:

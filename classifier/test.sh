@@ -1,6 +1,6 @@
 #!/bin/bash
-#SBATCH -J pred
-#SBATCH -o pred.out
+#SBATCH -J test
+#SBATCH -o test.out
 #SBATCH -N 1
 #SBATCH -c 64
 #SBATCH -t 48:00:00
@@ -12,10 +12,10 @@
 TESTING_DIR="/mnt/external.data/TowbinLab/spsalmon/moult_database/test_database/fluo/"
 TESTING_LABELS="$TESTING_DIR""labels.csv"
 
-REPORT_DIR="./test_reports"
+REPORT_DIR="./test_reports/"
 
 # CHANGE FOR THE PATH OF THE MODEL YOU WANT TO USE
 
-MODEL_PATH="./checkpoints/CP_epoch1.pth"
+MODEL_PATH="./checkpoints/CP_epoch26.pth"
 
-python3 predict_moults.py -b 12 -i "$TESTING_DIR" -o "$REPORT_DIR" -m "$MODEL_PATH"
+python3 test.py -b 20 -i "$TESTING_DIR" -o "$REPORT_DIR" -m "$MODEL_PATH"

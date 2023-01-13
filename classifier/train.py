@@ -18,6 +18,8 @@ from utils.dataset import TrainingDataset
 from torch.utils.data import DataLoader
 from collections import OrderedDict
 
+logging.basicConfig()
+
 def load_model_parallel(model_path: str, device: torch.device) -> Tuple[nn.Module, int, int, int, list, float, str]:
     """
     Loads the model from the given path and returns it as a DataParallel model, along with other relevant information.
@@ -201,7 +203,6 @@ def train_net(net,
 
                         probs = net(imgs)
 
-
                         loss = criterion(probs, true_labels)
 
                         probs = torch.softmax(net(imgs), dim=1)
@@ -242,6 +243,7 @@ def train_net(net,
                     pass
                 torch.save({'epoch': epoch + 1,
                             'layers': layers,
+                            'n_channels': n_channels,
                             'dim': dim,
                             'classes':classes,
                             'model_state_dict': net.state_dict(),
